@@ -24,7 +24,7 @@ from .script import Sentence
 MODES = {
     "Под текст (по сюжету)": "text",
     "Интересные моменты": "highlights",
-    "ИИ: сцены по смыслу текста (Claude)": "ai",
+    "ИИ: по смыслу текста (Claude)": "ai",
 }
 
 _EXCLUDED = -1e3
@@ -52,7 +52,7 @@ class Shot:
     sentence: int
     region: tuple[int, int] = (0, 0)  # где искать замену (индексы отсчётов)
     rejected: list[int] = field(default_factory=list)
-    alternatives: list[Candidate] = field(default_factory=list)  # варианты ИИ для 🔄
+    alternatives: list[Candidate] = field(default_factory=list)  # варианты ИИ для кнопки ↻
     note: str = ""
 
     @property

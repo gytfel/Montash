@@ -228,7 +228,7 @@ class App(ctk.CTk):
         self._preview_pending = False
 
         self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=0, minsize=380)
+        self.grid_columnconfigure(1, weight=0)
         self.grid_rowconfigure(1, weight=1)
 
         self._build_header()
@@ -274,18 +274,38 @@ class App(ctk.CTk):
             command=command, **colors,
         )
 
-    def _build_clips_tab(self, tab):
-        tab.grid_columnconfigure(0, weight=0, minsize=330)
+    @staticmethod
+    def _scrollable(master, **kwargs) -> ctk.CTkScrollableFrame:
+        kwargs.setdefault("fg_color", "transparent")
+        return ctk.CTkScrollableFrame(
+            master, scrollbar_button_color="#4A4F6A", scrollbar_button_hover_color=ACCENT, **kwargs
+        )
+
+    def _side_column(self, tab, width: int, button_text: str, command) -> ctk.CTkScrollableFrame:
+        """Прокручиваемая колонка настроек; главная кнопка закреплена под ней и видна всегда.
+
+        Ширина задаётся через width виджета: CustomTkinter масштабирует её вместе с
+        интерфейсом (масштаб Windows 125–150%), а minsize у grid — нет.
+        """
+        tab.grid_columnconfigure(0, weight=0)
         tab.grid_columnconfigure(1, weight=1)
         tab.grid_rowconfigure(0, weight=1)
+        holder = ctk.CTkFrame(tab, fg_color="transparent")
+        holder.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        holder.grid_rowconfigure(0, weight=1)
+        holder.grid_columnconfigure(0, weight=1)
+        col = self._scrollable(holder, width=width)
+        col.grid(row=0, column=0, sticky="nsew")
+        self._big_button(holder, button_text, command).grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        return col
 
-        col = ctk.CTkScrollableFrame(tab, fg_color="transparent")
-        col.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+    def _build_clips_tab(self, tab):
+        col = self._side_column(tab, 320, "⚡ Анализировать и нарезать", self._analyze)
 
         s = Section(col, "Источник")
         s.pack(fill="x", pady=(0, 10))
         ctk.CTkButton(s.body, text="📂 Выбрать видео", fg_color=ACCENT, command=self._choose_video).pack(fill="x")
-        self.file_label = ctk.CTkLabel(s.body, text="Файл не выбран", text_color=MUTED, wraplength=280, anchor="w", justify="left")
+        self.file_label = ctk.CTkLabel(s.body, text="Файл не выбран", text_color=MUTED, wraplength=265, anchor="w", justify="left")
         self.file_label.pack(fill="x", pady=(6, 0))
 
         s = Section(col, "Нарезка")
@@ -297,13 +317,11 @@ class App(ctk.CTk):
         self.subs_enabled = ctk.BooleanVar(value=self.app_cfg.get("subs", True))
         ctk.CTkCheckBox(s.body, text="Делать субтитры по речи", variable=self.subs_enabled, fg_color=ACCENT).pack(anchor="w")
 
-        self._big_button(col, "⚡ Анализировать и нарезать", self._analyze).pack(fill="x", pady=(0, 10))
-
         s = Section(col, "Редактор субтитров")
         s.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(
-            s.body, text="Одна строка = одна фраза на экране.\nПустая строка удаляет фразу.",
-            text_color=MUTED, justify="left", anchor="w",
+            s.body, text="Одна строка = одна фраза на экране. Пустая строка удаляет фразу.",
+            text_color=MUTED, justify="left", anchor="w", wraplength=265,
         ).pack(fill="x")
         self.subs_box = ctk.CTkTextbox(s.body, height=220, wrap="word")
         self.subs_box.pack(fill="x", pady=6)
@@ -327,12 +345,7 @@ class App(ctk.CTk):
         self._big_button(center, "🎬 Рендер всех клипов", self._render_clips, green=True).grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
 
     def _build_film_tab(self, tab):
-        tab.grid_columnconfigure(0, weight=0, minsize=360)
-        tab.grid_columnconfigure(1, weight=1)
-        tab.grid_rowconfigure(0, weight=1)
-
-        col = ctk.CTkScrollableFrame(tab, fg_color="transparent")
-        col.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        col = self._side_column(tab, 350, "⚡ Собрать клип", self._build_montage)
 
         s = Section(col, "Файлы фильма")
         s.pack(fill="x", pady=(0, 10))
@@ -340,39 +353,24 @@ class App(ctk.CTk):
         row.pack(fill="x")
         ctk.CTkButton(row, text="📂 Добавить файлы", fg_color=ACCENT, command=self._add_film_files).pack(side="left", fill="x", expand=True)
         ctk.CTkButton(row, text="Очистить", width=80, fg_color="#3A3F55", command=self._clear_film_files).pack(side="left", padx=(4, 0))
-        self.film_label = ctk.CTkLabel(s.body, text="Файлы не выбраны", text_color=MUTED, wraplength=310, anchor="w", justify="left")
+        self.film_label = ctk.CTkLabel(s.body, text="Файлы не выбраны", text_color=MUTED, wraplength=295, anchor="w", justify="left")
         self.film_label.pack(fill="x", pady=(6, 0))
 
-        s = Section(col, "Текст про фильм")
-        s.pack(fill="x", pady=(0, 10))
-        ctk.CTkLabel(
-            s.body, text="Текст пойдёт в субтитры. Пишите по ходу сюжета —\nкадры подбираются в том же порядке.",
-            text_color=MUTED, justify="left", anchor="w",
-        ).pack(fill="x")
-        self.script_box = ctk.CTkTextbox(s.body, height=230, wrap="word")
-        self.script_box.pack(fill="x", pady=6)
-        self.script_box.insert("1.0", self.app_cfg.get("script", ""))
-        self.script_box.bind("<KeyRelease>", lambda _: self._update_script_info())
-        self.script_info = ctk.CTkLabel(s.body, text="", text_color=MUTED, anchor="w", justify="left", wraplength=310)
-        self.script_info.pack(fill="x")
-        ctk.CTkButton(s.body, text="Обновить только субтитры", fg_color="#3A3F55", command=self._retime_script).pack(fill="x", pady=(6, 0))
-
-        s = Section(col, "Монтаж")
+        s = self.montage_section = Section(col, "Монтаж")
         s.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(s.body, text="Как подбирать кадры", anchor="w").pack(fill="x")
         self.mode_var = ctk.StringVar(value=_invert(MODES).get(self.app_cfg.get("film_mode", "text"), next(iter(MODES))))
-        ctk.CTkOptionMenu(s.body, values=list(MODES), variable=self.mode_var).pack(fill="x", pady=(2, 6))
+        ctk.CTkOptionMenu(s.body, values=list(MODES), variable=self.mode_var, command=lambda _: self._mode_changed()).pack(fill="x", pady=(2, 6))
         self.film_dur = LabeledSlider(s.body, "Длина клипа", 15, 180, self.app_cfg.get("film_duration", 60), step=5, fmt="{:.0f} с", command=lambda _: self._update_script_info())
         self.film_dur.pack(fill="x")
         self.shot_len = LabeledSlider(s.body, "Макс. длина одного плана", 1.5, 8, self.app_cfg.get("shot_len", 3.5), step=0.5, fmt="{:.1f} с")
         self.shot_len.pack(fill="x")
 
-        s = Section(col, "ИИ-подбор сцен (необязательно)")
-        s.pack(fill="x", pady=(0, 10))
+        # Показывается только в ИИ-режиме (см. _mode_changed).
+        s = self.ai_section = Section(col, "ИИ-подбор сцен")
         ctk.CTkLabel(
-            s.body, wraplength=310, justify="left", anchor="w", text_color=MUTED,
-            text="Работает в режиме «ИИ: сцены по смыслу текста». Ключевые кадры фильма "
-            "отправляются в Claude API — нужен интернет и ключ с console.anthropic.com. "
+            s.body, wraplength=295, justify="left", anchor="w", text_color=MUTED,
+            text="Ключевые кадры фильма отправляются в Claude API — нужен интернет и ключ с console.anthropic.com. "
             "Первый анализ фильма ≈ $0.3–0.5 (Opus), повторные сборки — центы.",
         ).pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(s.body, text="Ключ API Anthropic", anchor="w").pack(fill="x")
@@ -381,25 +379,39 @@ class App(ctk.CTk):
         if self.app_cfg.get("api_key"):
             self.api_key.insert(0, self.app_cfg["api_key"])
         self.remember_key = ctk.BooleanVar(value=bool(self.app_cfg.get("api_key")))
-        ctk.CTkCheckBox(s.body, text="Запомнить ключ на этом компьютере", variable=self.remember_key, fg_color=ACCENT).pack(anchor="w", pady=(0, 6))
+        ctk.CTkCheckBox(s.body, text="Запомнить ключ", variable=self.remember_key, fg_color=ACCENT).pack(anchor="w", pady=(0, 6))
         ctk.CTkLabel(s.body, text="Модель", anchor="w").pack(fill="x")
         self.ai_model_var = ctk.StringVar(value=_invert(AI_MODELS).get(self.app_cfg.get("ai_model", ""), next(iter(AI_MODELS))))
         ctk.CTkOptionMenu(s.body, values=list(AI_MODELS), variable=self.ai_model_var).pack(fill="x", pady=(2, 0))
 
+        s = Section(col, "Текст про фильм")
+        s.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(
+            s.body, text="Текст пойдёт в субтитры. Пишите по ходу сюжета — кадры подбираются в том же порядке.",
+            text_color=MUTED, justify="left", anchor="w", wraplength=295,
+        ).pack(fill="x")
+        self.script_box = ctk.CTkTextbox(s.body, height=180, wrap="word")
+        self.script_box.pack(fill="x", pady=6)
+        self.script_box.insert("1.0", self.app_cfg.get("script", ""))
+        self.script_box.bind("<KeyRelease>", lambda _: self._update_script_info())
+        self.script_info = ctk.CTkLabel(s.body, text="", text_color=MUTED, anchor="w", justify="left", wraplength=295)
+        self.script_info.pack(fill="x")
+        ctk.CTkButton(s.body, text="Обновить только субтитры", fg_color="#3A3F55", command=self._retime_script).pack(fill="x", pady=(6, 0))
+
         s = Section(col, "Звук")
         s.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(
-            s.body, text="Звук и музыка фильма всегда отключаются.\nМожно добавить свою озвучку и/или музыку.",
-            text_color=MUTED, justify="left", anchor="w",
+            s.body, text="Звук и музыка фильма всегда отключаются. Можно добавить свою озвучку и/или музыку.",
+            text_color=MUTED, justify="left", anchor="w", wraplength=295,
         ).pack(fill="x", pady=(0, 6))
-        self.voice_slot = FileSlot(s.body, "🎙 Озвучка текста (необязательно)", AUDIO_TYPES, self._update_script_info)
+        self.voice_slot = FileSlot(s.body, "🎙 Своя озвучка", AUDIO_TYPES, self._update_script_info)
         self.voice_slot.pack(fill="x", pady=(0, 6))
-        self.music_slot = FileSlot(s.body, "🎵 Фоновая музыка (необязательно)", AUDIO_TYPES)
+        self.music_slot = FileSlot(s.body, "🎵 Фоновая музыка", AUDIO_TYPES)
         self.music_slot.pack(fill="x", pady=(0, 6))
         self.music_vol = LabeledSlider(s.body, "Громкость музыки", 0, 100, self.app_cfg.get("music_volume", 25), fmt="{:.0f}%")
         self.music_vol.pack(fill="x")
 
-        self._big_button(col, "⚡ Собрать клип", self._build_montage).pack(fill="x", pady=(0, 10))
+        self._mode_changed()
 
         center = ctk.CTkFrame(tab, fg_color=PANEL, corner_radius=12)
         center.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
@@ -410,22 +422,22 @@ class App(ctk.CTk):
         self.film_preview = PreviewPane(center, "Добавьте файлы фильма, вставьте текст\nи нажмите «Собрать клип»", self._schedule_preview)
         self.film_preview.grid(row=0, column=0, sticky="nsew", padx=12, pady=(12, 6))
         ctk.CTkLabel(
-            center, text="ПЛАНЫ: фраза · файл · таймкод в фильме · 🔄 другой кадр",
+            center, text="ПЛАНЫ: фраза · файл · таймкод в фильме · ↻ другой кадр",
             font=ctk.CTkFont(size=12, weight="bold"), text_color=MUTED, anchor="w",
         ).grid(row=1, column=0, sticky="ew", padx=12)
-        self.shots_frame = ctk.CTkScrollableFrame(center, fg_color=BG)
+        self.shots_frame = self._scrollable(center, fg_color=BG)
         self.shots_frame.grid(row=2, column=0, sticky="nsew", padx=12, pady=6)
         self._big_button(center, "🎬 Сохранить клип", self._render_montage, green=True).grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
         self._update_script_info()
 
     def _build_shared(self, row: int, column: int):
-        col = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        col = self._scrollable(self, width=340)
         col.grid(row=row, column=column, sticky="nsew", padx=(6, 12), pady=12)
         st = self.style
 
         s = Section(col, "Распознавание речи")
         s.pack(fill="x", pady=(0, 10))
-        ctk.CTkLabel(s.body, text="Модель Whisper (больше = точнее, медленнее)", anchor="w").pack(fill="x")
+        ctk.CTkLabel(s.body, text="Модель Whisper (больше = точнее, медленнее)", anchor="w", justify="left", wraplength=300).pack(fill="x")
         self.model_var = ctk.StringVar(value=self.app_cfg.get("model", "small"))
         ctk.CTkOptionMenu(s.body, values=MODELS, variable=self.model_var).pack(fill="x", pady=(2, 6))
         ctk.CTkLabel(s.body, text="Язык", anchor="w").pack(fill="x")
@@ -450,7 +462,7 @@ class App(ctk.CTk):
 
         s = Section(col, "Типографика и караоке")
         s.pack(fill="x", pady=(0, 10))
-        ctk.CTkLabel(s.body, text="Шрифт (установленный в системе или из папки fonts)", anchor="w", wraplength=320, justify="left").pack(fill="x")
+        ctk.CTkLabel(s.body, text="Шрифт (установленный в системе или из папки fonts)", anchor="w", wraplength=300, justify="left").pack(fill="x")
         self.font_var = ctk.StringVar(value=st.font)
         ctk.CTkComboBox(s.body, values=FONTS, variable=self.font_var, command=lambda _: self._style_changed()).pack(fill="x", pady=(2, 8))
         self.font_var.trace_add("write", lambda *_: self._style_changed())
@@ -644,6 +656,12 @@ class App(ctk.CTk):
         names = "\n".join(f"{i + 1}. {Path(p).name}" for i, p in enumerate(self.film_files))
         self.film_label.configure(text=names)
 
+    def _mode_changed(self):
+        if MODES[self.mode_var.get()] == "ai":
+            self.ai_section.pack(fill="x", pady=(0, 10), after=self.montage_section)
+        else:
+            self.ai_section.pack_forget()
+
     def _script_text(self) -> str:
         return self.script_box.get("1.0", "end").strip()
 
@@ -724,7 +742,7 @@ class App(ctk.CTk):
             )
             info.pack(side="left", fill="x", expand=True, padx=8)
             info.bind("<Button-1>", lambda _, i=i: self._jump_to_shot(i))
-            ctk.CTkButton(frame, text="🔄", width=34, fg_color="#3A3F55", command=lambda i=i: self._replace_shot(i)).pack(side="right", padx=(2, 6), pady=4)
+            ctk.CTkButton(frame, text="↻", width=34, fg_color="#3A3F55", command=lambda i=i: self._replace_shot(i)).pack(side="right", padx=(2, 6), pady=4)
             entry = ctk.CTkEntry(frame, width=90)
             entry.insert(0, _fmt_precise(shot.src_start))
             entry.pack(side="right", padx=2)
