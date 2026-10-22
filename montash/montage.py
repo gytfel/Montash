@@ -74,7 +74,7 @@ def build_montage(
 
     if not text.strip():
         raise ValueError("Вставьте текст про фильм")
-    files = sorted(files, key=natural_sort_key)
+    files = list(files)  # порядок частей задаёт вызывающий
     cached = cached if cached is not None else {}
 
     analyses = []

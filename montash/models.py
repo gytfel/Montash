@@ -36,6 +36,7 @@ class Clip:
     end: float
     # Время слов в чанках — относительно начала клипа.
     chunks: list[Chunk] = field(default_factory=list)
+    source: str = ""  # путь к исходному видео
 
     @property
     def duration(self) -> float:

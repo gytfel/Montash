@@ -47,7 +47,7 @@ def _print_progress(frac: float, msg: str) -> None:
 def film_main(argv: list[str]) -> None:
     from .ai_scenes import AI_MODELS, AiOptions
     from .film import MODES
-    from .montage import build_montage
+    from .montage import build_montage, natural_sort_key
     from .render import render_montage
 
     p = argparse.ArgumentParser(prog="montash film", description="Один клип из фильма по тексту")
@@ -68,7 +68,7 @@ def film_main(argv: list[str]) -> None:
 
     text = Path(a.text).read_text(encoding="utf-8")
     m = build_montage(
-        a.files, text, a.duration, a.mode, a.shot, a.voice, a.model, a.lang, _print_progress,
+        sorted(a.files, key=natural_sort_key), text, a.duration, a.mode, a.shot, a.voice, a.model, a.lang, _print_progress,
         ai=AiOptions(a.ai_key, a.ai_model),
     )
     if m.ai_cost:

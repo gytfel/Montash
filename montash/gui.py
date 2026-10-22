@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import queue
+import sys
 import tempfile
 import threading
 import traceback
@@ -16,6 +17,7 @@ from PIL import Image
 
 from . import __version__
 from .clips import apply_text_edit, build_clips, rechunk
+from .download import DOWNLOAD_DIR, VIDEO_EXTS, collect_videos, download, is_url
 from .ffmpeg_tools import probe_duration
 from .ai_scenes import AI_MODELS, AiOptions
 from .film import MODES, replace_shot, set_shot_time
@@ -34,10 +36,22 @@ FONTS = [
     "Montserrat Black", "Montserrat", "Bebas Neue", "Impact", "Arial Black",
     "Arial", "Roboto", "Oswald", "Comic Sans MS", "Segoe UI Black",
 ]
-VIDEO_TYPES = [("Видео", "*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.ts"), ("Все файлы", "*.*")]
+VIDEO_TYPES = [("Видео", " ".join(f"*{e}" for e in sorted(VIDEO_EXTS))), ("Все файлы", "*.*")]
 AUDIO_TYPES = [("Аудио", "*.mp3 *.wav *.m4a *.aac *.ogg *.flac"), ("Все файлы", "*.*")]
 TAB_CLIPS = "Клипы из видео"
 TAB_FILM = "Фильм → клип"
+DROP_HINT = "…или перетащите видео, папку или ссылку прямо в окно"
+
+# Перетаскивание файлов из Проводника. Без tkinterdnd2 программа работает и так.
+try:
+    from tkinterdnd2 import DND_FILES, DND_TEXT, TkinterDnD
+
+    _DnDBase = TkinterDnD.DnDWrapper
+except Exception:  # noqa: BLE001 — нет пакета или его бинарников под эту систему
+    DND_FILES = DND_TEXT = TkinterDnD = None
+
+    class _DnDBase:
+        pass
 
 
 def _invert(d: dict) -> dict:
@@ -164,6 +178,60 @@ class FileSlot(ctk.CTkFrame):
             self.command()
 
 
+class UrlDialog(ctk.CTkToplevel):
+    """Окно для ссылки на видео; ссылка из буфера обмена подставляется сама."""
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.title("Видео по ссылке")
+        self.geometry("560x200")
+        self.resizable(False, False)
+        self.configure(fg_color=BG)
+        self.result: str | None = None
+        ctk.CTkLabel(
+            self, justify="left", anchor="w", wraplength=520,
+            text="Вставьте ссылку на видео: YouTube, VK Видео, Rutube, TikTok, Twitch, Vimeo "
+            "или прямую ссылку на файл. Видео сохранится в папку «Видео\\Montash».",
+        ).pack(fill="x", padx=16, pady=(16, 8))
+        self.entry = ctk.CTkEntry(self, placeholder_text="https://…")
+        self.entry.pack(fill="x", padx=16)
+        try:
+            clip = self.clipboard_get().strip()
+            if is_url(clip):
+                self.entry.insert(0, clip)
+        except Exception:  # noqa: BLE001 — в буфере не текст
+            pass
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=16)
+        ctk.CTkButton(row, text="Отмена", width=100, fg_color="#3A3F55", command=self.destroy).pack(side="right")
+        ctk.CTkButton(row, text="⬇ Скачать", width=120, fg_color=ACCENT, command=self._ok).pack(side="right", padx=8)
+        self.entry.bind("<Return>", lambda _: self._ok())
+        self.bind("<Escape>", lambda _: self.destroy())
+        self.transient(master)
+        self.after(100, self._focus)
+
+    def _focus(self):
+        try:
+            self.grab_set()
+        except Exception:  # noqa: BLE001 — окно ещё не показано
+            pass
+        self.entry.focus_set()
+
+    def _ok(self):
+        url = self.entry.get().strip()
+        if not is_url(url):
+            self.entry.configure(border_color="#FF5252")
+            return
+        self.result = url
+        self.destroy()
+
+    @classmethod
+    def ask(cls, master) -> str | None:
+        dialog = cls(master)
+        master.wait_window(dialog)
+        return dialog.result
+
+
 class PreviewPane(ctk.CTkFrame):
     """Превью кадра + ползунок времени."""
 
@@ -195,7 +263,7 @@ class PreviewPane(ctk.CTkFrame):
         self.label.configure(image=None, text=f"Ошибка превью:\n{text}")
 
 
-class App(ctk.CTk):
+class App(ctk.CTk, _DnDBase):
     def __init__(self):
         super().__init__()
         ctk.set_appearance_mode("dark")
@@ -207,11 +275,10 @@ class App(ctk.CTk):
         self.style, self.render_settings, app_cfg = load_settings()
         self.app_cfg = app_cfg
         # Вкладка «Клипы из видео»
-        self.video_path: str | None = None
-        self.duration = 0.0
-        self.words = []
-        self.words_key = None
+        self.videos: list[tuple[str, float]] = []  # (путь, длительность)
+        self.words_cache: dict = {}  # (путь, модель, язык) -> слова
         self.clips: list[Clip] = []
+        self.clip_labels: dict[str, Clip] = {}
         self.current: Clip | None = None
         # Вкладка «Фильм → клип»
         self.film_files: list[str] = []
@@ -244,6 +311,9 @@ class App(ctk.CTk):
         self._build_status()
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._enable_drop()
+        if sys.platform == "win32":
+            self.bind_all("<Control-KeyPress>", self._ctrl_keys_any_layout, add="+")
         self.after(100, self._poll_events)
 
     # ---------------------------------------------------------------- layout
@@ -304,13 +374,14 @@ class App(ctk.CTk):
 
         s = Section(col, "Источник")
         s.pack(fill="x", pady=(0, 10))
-        ctk.CTkButton(s.body, text="📂 Выбрать видео", fg_color=ACCENT, command=self._choose_video).pack(fill="x")
-        self.file_label = ctk.CTkLabel(s.body, text="Файл не выбран", text_color=MUTED, wraplength=265, anchor="w", justify="left")
+        self._source_buttons(s.body, self._choose_video, self._choose_video_folder, lambda: self._ask_link("clips"))
+        ctk.CTkLabel(s.body, text=DROP_HINT, text_color=MUTED, wraplength=265, anchor="w", justify="left").pack(fill="x", pady=(4, 0))
+        self.file_label = ctk.CTkLabel(s.body, text="Видео не выбрано", text_color=MUTED, wraplength=265, anchor="w", justify="left")
         self.file_label.pack(fill="x", pady=(6, 0))
 
         s = Section(col, "Нарезка")
         s.pack(fill="x", pady=(0, 10))
-        self.count_slider = LabeledSlider(s.body, "Количество клипов", 1, 30, self.app_cfg.get("count", 5))
+        self.count_slider = LabeledSlider(s.body, "Клипов с каждого видео", 1, 30, self.app_cfg.get("count", 5))
         self.count_slider.pack(fill="x")
         self.dur_slider = LabeledSlider(s.body, "Хронометраж клипа, сек", 5, 180, self.app_cfg.get("duration", 30), fmt="{:.0f} с")
         self.dur_slider.pack(fill="x")
@@ -349,10 +420,8 @@ class App(ctk.CTk):
 
         s = Section(col, "Файлы фильма")
         s.pack(fill="x", pady=(0, 10))
-        row = ctk.CTkFrame(s.body, fg_color="transparent")
-        row.pack(fill="x")
-        ctk.CTkButton(row, text="📂 Добавить файлы", fg_color=ACCENT, command=self._add_film_files).pack(side="left", fill="x", expand=True)
-        ctk.CTkButton(row, text="Очистить", width=80, fg_color="#3A3F55", command=self._clear_film_files).pack(side="left", padx=(4, 0))
+        self._source_buttons(s.body, self._add_film_files, self._add_film_folder, lambda: self._ask_link("film"), self._clear_film_files)
+        ctk.CTkLabel(s.body, text=DROP_HINT, text_color=MUTED, wraplength=295, anchor="w", justify="left").pack(fill="x", pady=(4, 0))
         self.film_label = ctk.CTkLabel(s.body, text="Файлы не выбраны", text_color=MUTED, wraplength=295, anchor="w", justify="left")
         self.film_label.pack(fill="x", pady=(6, 0))
 
@@ -539,25 +608,121 @@ class App(ctk.CTk):
         self._fill_subs_box()
         self._schedule_preview()
 
-    # ---------------------------------------------------- tab: clips from video
-    def _choose_video(self):
-        path = filedialog.askopenfilename(title="Выберите видео", filetypes=VIDEO_TYPES)
-        if not path:
+    # ------------------------------------------------- источники видео
+    def _source_buttons(self, master, on_files, on_folder, on_link, on_clear=None):
+        top = ctk.CTkFrame(master, fg_color="transparent")
+        top.pack(fill="x")
+        ctk.CTkButton(top, text="📂 Файлы", fg_color=ACCENT, command=on_files).pack(side="left", fill="x", expand=True)
+        ctk.CTkButton(top, text="📁 Папка", fg_color=ACCENT, command=on_folder).pack(side="left", fill="x", expand=True, padx=(4, 0))
+        bottom = ctk.CTkFrame(master, fg_color="transparent")
+        bottom.pack(fill="x", pady=(4, 0))
+        ctk.CTkButton(bottom, text="🔗 По ссылке", fg_color=ACCENT, command=on_link).pack(side="left", fill="x", expand=True)
+        if on_clear:
+            ctk.CTkButton(bottom, text="Очистить", width=90, fg_color="#3A3F55", command=on_clear).pack(side="left", padx=(4, 0))
+
+    def _enable_drop(self):
+        if TkinterDnD is None:
             return
         try:
-            self.duration = probe_duration(path)
-        except Exception as e:
-            messagebox.showerror("Ошибка", str(e))
+            TkinterDnD._require(self)
+            # Регистрируем всё окно: tkdnd ищет цель от элемента под курсором вверх.
+            self.drop_target_register(DND_FILES, DND_TEXT)
+            self.dnd_bind("<<Drop>>", self._on_drop)
+        except Exception:  # noqa: BLE001 — tkdnd не загрузился, работаем без перетаскивания
+            traceback.print_exc()
+
+    def _on_drop(self, event):
+        data = str(event.data).strip()
+        target = "film" if self.tabs.get() == TAB_FILM else "clips"
+        if is_url(data):
+            self._download_link(data, target)
+        else:
+            self._receive_videos(list(self.tk.splitlist(data)), target)
+        return getattr(event, "action", "copy")
+
+    def _receive_videos(self, paths: list[str], target: str):
+        videos = collect_videos(paths)
+        if not videos:
+            self._set_status("Среди перетащенного нет видеофайлов")
             return
-        self.video_path = path
-        self.words, self.words_key, self.clips, self.current = [], None, [], None
-        self.file_label.configure(text=f"{Path(path).name}\nДлительность: {fmt_time(self.duration)}")
+        if target == "film":
+            # Новые файлы — в конец списка, в своём естественном порядке (часть 1, 2, …).
+            self.film_files = list(dict.fromkeys(self.film_files + sorted(videos, key=natural_sort_key)))
+            self._update_film_label()
+            self._set_status(f"Файлов фильма: {len(self.film_files)}")
+        else:
+            self._set_videos(videos)
+
+    def _ask_link(self, target: str):
+        url = UrlDialog.ask(self)
+        if url:
+            self._download_link(url, target)
+
+    def _download_link(self, url: str, target: str):
+        if self.busy:
+            messagebox.showinfo("Montash", "Дождитесь окончания текущей операции")
+            return
+        out_dir = self.app_cfg.get("download_dir") or str(DOWNLOAD_DIR)
+
+        def job():
+            path = download(url, out_dir, self._progress)
+            self.events.put(("downloaded", (target, path)))
+
+        self._run_bg(job, "Скачивание видео…")
+
+    def _ctrl_keys_any_layout(self, event):
+        """Ctrl+C/V/X/A при русской раскладке: Tk в Windows сам их не понимает."""
+        if event.keysym.lower() in ("c", "v", "x", "a"):
+            return None
+        action = {67: "<<Copy>>", 86: "<<Paste>>", 88: "<<Cut>>", 65: "<<SelectAll>>"}.get(event.keycode)
+        if action:
+            event.widget.event_generate(action)
+            return "break"
+        return None
+
+    # ---------------------------------------------------- tab: clips from video
+    def _choose_video(self):
+        paths = filedialog.askopenfilenames(title="Выберите видео", filetypes=VIDEO_TYPES)
+        if paths:
+            self._set_videos(list(paths))
+
+    def _choose_video_folder(self):
+        folder = filedialog.askdirectory(title="Папка с видео")
+        if folder:
+            self._receive_videos([folder], "clips")
+
+    def _set_videos(self, paths: list[str]):
+        videos, failed = [], []
+        for path in paths:
+            try:
+                videos.append((path, probe_duration(path)))
+            except Exception:  # noqa: BLE001 — битый или не видео
+                failed.append(Path(path).name)
+        if failed:
+            messagebox.showwarning("Montash", "Не удалось открыть:\n" + "\n".join(failed[:10]))
+        if not videos:
+            return
+        self.videos = videos
+        self.clips, self.clip_labels, self.current = [], {}, None
+        self.clip_menu.configure(values=["—"])
+        self.clip_var.set("—")
+        self._fill_subs_box()
+        if len(videos) == 1:
+            path, duration = videos[0]
+            text = f"{Path(path).name}\nДлительность: {fmt_time(duration)}"
+        else:
+            total = sum(d for _, d in videos)
+            names = [f"{i + 1}. {Path(p).name}" for i, (p, _) in enumerate(videos[:8])]
+            if len(videos) > 8:
+                names.append(f"…и ещё {len(videos) - 8}")
+            text = f"{len(videos)} видео, всего {fmt_time(total)}:\n" + "\n".join(names)
+        self.file_label.configure(text=text)
         self._set_status("Видео загружено. Нажмите «Анализировать и нарезать».")
 
     def _analyze(self):
         if self.busy:
             return
-        if not self.video_path:
+        if not self.videos:
             messagebox.showwarning("Montash", "Сначала выберите видео")
             return
         self.style = self._collect_style()
@@ -565,17 +730,27 @@ class App(ctk.CTk):
         clip_dur = self.dur_slider.get()
         need_subs = self.subs_enabled.get()
         model, lang = self.model_var.get(), LANGUAGES[self.lang_var.get()]
-        path, duration = self.video_path, self.duration
+        videos, cache = list(self.videos), self.words_cache
         wpc = self.style.words_per_chunk
-        key = (path, model, lang)
-        cached = self.words if self.words_key == key else None
 
         def job():
-            words = []
-            if need_subs:
-                words = cached if cached is not None else transcribe(path, model, lang, duration, progress=self._progress)
-            clips = build_clips(words, duration, count, clip_dur, wpc)
-            self.events.put(("analyzed", (words, clips, key if need_subs else None)))
+            clips, n_words = [], 0
+            for k, (path, duration) in enumerate(videos):
+                words = []
+                if need_subs:
+                    key = (path, model, lang)
+                    if key not in cache:
+                        prefix = f"[{k + 1}/{len(videos)}] " if len(videos) > 1 else ""
+                        cache[key] = transcribe(
+                            path, model, lang, duration,
+                            progress=lambda f, m: self._progress((k + f) / len(videos), prefix + m),
+                        )
+                    words = cache[key]
+                n_words += len(words)
+                for clip in build_clips(words, duration, count, clip_dur, wpc):
+                    clip.source = path
+                    clips.append(clip)
+            self.events.put(("analyzed", (clips, n_words)))
 
         self._run_bg(job, "Анализ…")
 
@@ -591,20 +766,20 @@ class App(ctk.CTk):
         self.app_cfg["out_dir"] = out_dir
         clips = [self.current] if only_current and self.current else list(self.clips)
         style, settings = self._collect_style(), self._collect_render()
-        src, subs = self.video_path, self.subs_enabled.get()
-        stem = Path(src).stem
+        subs = self.subs_enabled.get()
 
         def job():
             for i, clip in enumerate(clips):
-                self._progress(i / len(clips), f"Рендер клипа {clip.index + 1} ({i + 1}/{len(clips)})…")
+                stem = Path(clip.source).stem
+                self._progress(i / len(clips), f"Рендер: {stem}, клип {clip.index + 1} ({i + 1}/{len(clips)})…")
                 out = os.path.join(out_dir, f"{stem}_clip{clip.index + 1}.mp4")
-                render_clip(src, clip, style, settings, out, with_subtitles=subs)
+                render_clip(clip.source, clip, style, settings, out, with_subtitles=subs)
             self.events.put(("rendered", out_dir))
 
         self._run_bg(job, "Рендер…")
 
     def _select_clip(self, label: str):
-        self.current = next((c for c in self.clips if c.label == label), None)
+        self.current = self.clip_labels.get(label)
         if self.current:
             self.clips_preview.time.set_range(self.current.duration)
             first = self.current.chunks[0].start + 0.05 if self.current.chunks else 0
@@ -638,10 +813,13 @@ class App(ctk.CTk):
     # ------------------------------------------------------ tab: film -> clip
     def _add_film_files(self):
         paths = filedialog.askopenfilenames(title="Файлы фильма", filetypes=VIDEO_TYPES)
-        if not paths:
-            return
-        self.film_files = sorted(set(self.film_files) | set(paths), key=natural_sort_key)
-        self._update_film_label()
+        if paths:
+            self._receive_videos(list(paths), "film")
+
+    def _add_film_folder(self):
+        folder = filedialog.askdirectory(title="Папка с файлами фильма")
+        if folder:
+            self._receive_videos([folder], "film")
 
     def _clear_film_files(self):
         self.film_files = []
@@ -836,9 +1014,9 @@ class App(ctk.CTk):
             src_time = shot.src_start + (at - shot.out_start)
             chunks = m.chunks(style.words_per_chunk)
             return pane, lambda out: render_frame(src, src_time, chunks, at, m.total, style, settings, out)
-        if not (self.video_path and self.current):
+        if not self.current:
             return None
-        clip, pane, src = self.current, self.clips_preview, self.video_path
+        clip, pane, src = self.current, self.clips_preview, self.current.source
         at = max(0.0, min(pane.time.get(), clip.duration - 0.05))
         return pane, lambda out: render_frame(src, clip.start + at, clip.chunks, at, clip.duration, style, settings, out)
 
@@ -893,15 +1071,24 @@ class App(ctk.CTk):
                     self.progress.set(data[0])
                     self._set_status(data[1])
                 elif kind == "analyzed":
-                    self.words, self.clips, self.words_key = data
-                    labels = [c.label for c in self.clips] or ["—"]
+                    self.clips, n_words = data
+                    many = len({c.source for c in self.clips}) > 1
+                    self.clip_labels = {
+                        (f"{Path(c.source).stem[:24]} · {c.label}" if many else c.label): c for c in self.clips
+                    }
+                    labels = list(self.clip_labels) or ["—"]
                     self.clip_menu.configure(values=labels)
                     self.clip_var.set(labels[0])
                     self.current = None
                     if self.clips:
                         self._select_clip(labels[0])
                     self.progress.set(1)
-                    self._set_status(f"Найдено клипов: {len(self.clips)}, слов: {len(self.words)}")
+                    self._set_status(f"Найдено клипов: {len(self.clips)}, слов: {n_words}")
+                elif kind == "downloaded":
+                    target, path = data
+                    self.progress.set(1)
+                    self._receive_videos([path], target)
+                    self._set_status(f"Скачано: {Path(path).name} (папка {Path(path).parent})")
                 elif kind == "montage":
                     self.montage = data
                     self._fill_shot_rows()

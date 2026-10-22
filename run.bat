@@ -18,6 +18,9 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+REM Сайты часто меняются и ломают скачивание по ссылке, поэтому yt-dlp обновляем
+REM при каждом запуске. Без интернета просто пропускаем.
+%PY% -m pip install -q --disable-pip-version-check --no-warn-script-location -U "yt-dlp[default,deno]" >nul 2>nul
 echo.
 echo Запуск Montash Studio. Не закрывайте это окно, пока работаете в программе.
 %PY% main.py
