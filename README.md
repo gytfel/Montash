@@ -50,7 +50,7 @@
 
 ## Запуск из исходников
 
-Windows: установите Python 3.12 (отметьте «Add python.exe to PATH») и дважды щёлкните `run.bat`.
+Windows: установите Python 3.10–3.14, лучше 3.12 или 3.13 (отметьте «Add python.exe to PATH») и дважды щёлкните `run.bat`.
 Вручную:
 
 ```bash
