@@ -5,6 +5,7 @@ pyinstaller --noconfirm --onedir --windowed --name Montash ^
   --collect-all customtkinter ^
   --collect-all faster_whisper ^
   --collect-data imageio_ffmpeg ^
+  --collect-submodules anthropic ^
   main.py || exit /b 1
 if exist fonts xcopy /E /I /Y fonts dist\Montash\fonts >nul
 echo.

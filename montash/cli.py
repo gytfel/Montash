@@ -45,6 +45,7 @@ def _print_progress(frac: float, msg: str) -> None:
 
 
 def film_main(argv: list[str]) -> None:
+    from .ai_scenes import AI_MODELS, AiOptions
     from .film import MODES
     from .montage import build_montage
     from .render import render_montage
@@ -58,6 +59,8 @@ def film_main(argv: list[str]) -> None:
     p.add_argument("--voice", help="своя озвучка текста (необязательно)")
     p.add_argument("--music", help="фоновая музыка (необязательно)")
     p.add_argument("--music-volume", type=float, default=0.25)
+    p.add_argument("--ai-model", choices=list(AI_MODELS.values()), default="claude-opus-5-5")
+    p.add_argument("--ai-key", help="ключ API Anthropic для --mode ai (иначе ANTHROPIC_API_KEY)")
     p.add_argument("-o", "--out", default="film_clip.mp4")
     _add_style_args(p)
     a = p.parse_args(argv)
@@ -65,10 +68,14 @@ def film_main(argv: list[str]) -> None:
 
     text = Path(a.text).read_text(encoding="utf-8")
     m = build_montage(
-        a.files, text, a.duration, a.mode, a.shot, a.voice, a.model, a.lang, _print_progress
+        a.files, text, a.duration, a.mode, a.shot, a.voice, a.model, a.lang, _print_progress,
+        ai=AiOptions(a.ai_key, a.ai_model),
     )
+    if m.ai_cost:
+        print(f"ИИ-подбор: ≈ ${m.ai_cost:.2f}")
     for shot in m.shots:
-        print(f"  {shot.out_start:6.2f}s  {Path(m.files[shot.file_index]).name} @ {shot.src_start:.2f}s")
+        note = f"  — {shot.note}" if shot.note else ""
+        print(f"  {shot.out_start:6.2f}s  {Path(m.files[shot.file_index]).name} @ {shot.src_start:.2f}s{note}")
     print(f"Рендер -> {a.out}")
     render_montage(
         m.segments(), m.chunks(style.words_per_chunk), m.total, style, settings, a.out,

@@ -39,10 +39,15 @@ class VideoAnalysis:
         return len(self.motion)
 
 
-def _cache_path(path: str) -> Path:
+def cache_stem(path: str) -> str:
+    """Имя кэша для файла: меняется, если файл заменили."""
     st = os.stat(path)
     key = f"{os.path.abspath(path)}|{st.st_size}|{int(st.st_mtime)}|{_CACHE_VERSION}"
-    return CACHE_DIR / (hashlib.sha1(key.encode()).hexdigest() + ".npz")
+    return hashlib.sha1(key.encode()).hexdigest()
+
+
+def _cache_path(path: str) -> Path:
+    return CACHE_DIR / (cache_stem(path) + ".npz")
 
 
 def analyze_video(

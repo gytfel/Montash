@@ -4,7 +4,9 @@
 - "text": текст идёт по сюжету, поэтому фразы раскладываются по фильму
   хронологически, а внутри своего участка берётся самый динамичный план;
 - "highlights": берутся самые интересные моменты всего фильма
-  (движение, частые склейки, громкий звук) в хронологическом порядке.
+  (движение, частые склейки, громкий звук) в хронологическом порядке;
+- "ai": ИИ описывает ключевые кадры и подбирает сцены по смыслу фраз
+  (см. ai_scenes.py); здесь эти варианты раскладываются по планам.
 """
 
 from __future__ import annotations
@@ -19,11 +21,26 @@ from .clips import make_chunks
 from .models import Chunk
 from .script import Sentence
 
-MODES = {"Под текст (по сюжету)": "text", "Интересные моменты": "highlights"}
+MODES = {
+    "Под текст (по сюжету)": "text",
+    "Интересные моменты": "highlights",
+    "ИИ: сцены по смыслу текста (Claude)": "ai",
+}
 
 _EXCLUDED = -1e3
 _CUT_PENALTY = 0.35
 _GAP = int(2.0 / STEP)  # минимальный зазор между выбранными планами
+
+
+@dataclass
+class Candidate:
+    """Ключевой кадр одного плана фильма (секунды в файле)."""
+
+    file_index: int
+    time: float
+    shot_start: float
+    shot_end: float
+    note: str = ""  # описание сцены от ИИ
 
 
 @dataclass
@@ -35,6 +52,8 @@ class Shot:
     sentence: int
     region: tuple[int, int] = (0, 0)  # где искать замену (индексы отсчётов)
     rejected: list[int] = field(default_factory=list)
+    alternatives: list[Candidate] = field(default_factory=list)  # варианты ИИ для 🔄
+    note: str = ""
 
     @property
     def out_end(self) -> float:
@@ -138,14 +157,42 @@ class FilmIndex:
         return idx, float(score[idx])
 
 
+def select_keyframes(
+    index: FilmIndex, max_frames: int = 320, min_len: float = 1.0, max_len: float = 12.0
+) -> list[Candidate]:
+    """По одному кадру из середины каждого плана, равномерно по всему фильму."""
+    bounds = np.flatnonzero(index.cuts).tolist() + [index.n]
+    frames = []
+    for a, b in zip(bounds, bounds[1:]):
+        if (b - a) * STEP < min_len:
+            continue
+        # В длинном плане может быть несколько сцен (склейка не распознана) —
+        # берём по кадру на каждые max_len секунд.
+        parts = max(1, math.ceil((b - a) * STEP / max_len))
+        for k in range(parts):
+            pa, pb = a + (b - a) * k // parts, a + (b - a) * (k + 1) // parts
+            mid = (pa + pb) // 2
+            if index.interest[mid] <= _EXCLUDED / 2:
+                continue
+            fi, t = index.to_local(mid)
+            offset = int(index.offsets[fi])
+            frames.append(Candidate(fi, t, (pa - offset) * STEP, (pb - offset) * STEP))
+    if len(frames) > max_frames:
+        keep = np.linspace(0, len(frames) - 1, max_frames).round().astype(int)
+        frames = [frames[i] for i in sorted(set(keep.tolist()))]
+    return frames
+
+
 def plan_shots(
     index: FilmIndex,
     sentences: list[Sentence],
     total: float,
     mode: str = "text",
     max_shot: float = 3.5,
+    candidates: list[list[Candidate]] | None = None,
 ) -> list[Shot]:
-    shots = _split_into_shots(sentences, total, max_shot)
+    """`candidates` — варианты ИИ для каждой фразы (лучшие первыми), только для mode="ai"."""
+    shots = split_into_shots(sentences, total, max_shot)
     if not shots:
         return []
     blocked = np.zeros(index.n, dtype=bool)
@@ -174,7 +221,11 @@ def plan_shots(
         center = lo + span * (shot.out_start + shot.duration / 2) / total
         half = max(span / len(shots) * 0.75, length)
         shot.region = (int(center - half), int(center + half))
-        start = index.best(length, blocked, shot.region)
+        start = None
+        if mode == "ai" and candidates is not None and shot.sentence < len(candidates):
+            start = _take_candidate(index, shot, blocked, list(candidates[shot.sentence]))
+        if start is None:
+            start = index.best(length, blocked, shot.region)
         if start is None:
             start = index.best(length, blocked, (lo, hi))
         if start is None:
@@ -198,6 +249,12 @@ def replace_shot(index: FilmIndex, shots: list[Shot], i: int) -> bool:
     shot.rejected.append(current)
     for r in shot.rejected:
         _block(blocked, r, length)
+    if shot.alternatives:
+        start = _take_candidate(index, shot, blocked, shot.alternatives)
+        if start is not None:
+            _assign(index, shot, start)
+            return True
+    shot.note = ""
     # Рядом по сюжету — если там нет ничего сравнимого с лучшим по фильму.
     near = index.best_scored(length, blocked, shot.region)
     anywhere = index.best_scored(length, blocked, index.usable_range())
@@ -229,7 +286,7 @@ def subtitle_chunks(sentences: list[Sentence], words_per_chunk: int) -> list[Chu
     return chunks
 
 
-def _split_into_shots(sentences: list[Sentence], total: float, max_shot: float) -> list[Shot]:
+def split_into_shots(sentences: list[Sentence], total: float, max_shot: float) -> list[Shot]:
     shots = []
     for i, s in enumerate(sentences):
         start = 0.0 if i == 0 else s.start
@@ -241,6 +298,27 @@ def _split_into_shots(sentences: list[Sentence], total: float, max_shot: float) 
         for k in range(parts):
             shots.append(Shot(0, 0.0, span / parts, start + k * span / parts, i))
     return shots
+
+
+def _candidate_start(index: FilmIndex, c: Candidate, duration: float) -> int:
+    """Окно нужной длины вокруг ключевого кадра, по возможности внутри его плана."""
+    file_duration = index.analyses[c.file_index].duration
+    start = max(c.shot_start, min(c.time - duration / 2, c.shot_end - duration))
+    start = max(0.0, min(start, file_duration - duration))
+    return index.to_global(c.file_index, start)
+
+
+def _take_candidate(index: FilmIndex, shot: Shot, blocked: np.ndarray, options: list[Candidate]) -> int | None:
+    """Первый свободный вариант из `options`; остальные остаются в shot.alternatives."""
+    length = length_of(shot)
+    for k, c in enumerate(options):
+        start = _candidate_start(index, c, shot.duration)
+        if start + length <= index.n and not blocked[start:start + length].any():
+            shot.note = c.note
+            shot.alternatives = options[k + 1:]
+            return start
+    shot.alternatives = []
+    return None
 
 
 def _assign(index: FilmIndex, shot: Shot, start: int) -> None:

@@ -17,6 +17,7 @@ from PIL import Image
 from . import __version__
 from .clips import apply_text_edit, build_clips, rechunk
 from .ffmpeg_tools import probe_duration
+from .ai_scenes import AI_MODELS, AiOptions
 from .film import MODES, replace_shot, set_shot_time
 from .models import FILL_MODES, FORMATS, LOOKS, Clip, RenderSettings, SubtitleStyle, fmt_time
 from .montage import Montage, build_montage, natural_sort_key
@@ -366,6 +367,25 @@ class App(ctk.CTk):
         self.shot_len = LabeledSlider(s.body, "Макс. длина одного плана", 1.5, 8, self.app_cfg.get("shot_len", 3.5), step=0.5, fmt="{:.1f} с")
         self.shot_len.pack(fill="x")
 
+        s = Section(col, "ИИ-подбор сцен (необязательно)")
+        s.pack(fill="x", pady=(0, 10))
+        ctk.CTkLabel(
+            s.body, wraplength=310, justify="left", anchor="w", text_color=MUTED,
+            text="Работает в режиме «ИИ: сцены по смыслу текста». Ключевые кадры фильма "
+            "отправляются в Claude API — нужен интернет и ключ с console.anthropic.com. "
+            "Первый анализ фильма ≈ $0.3–0.5 (Opus), повторные сборки — центы.",
+        ).pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(s.body, text="Ключ API Anthropic", anchor="w").pack(fill="x")
+        self.api_key = ctk.CTkEntry(s.body, show="•", placeholder_text="sk-ant-… (или ANTHROPIC_API_KEY)")
+        self.api_key.pack(fill="x", pady=(2, 4))
+        if self.app_cfg.get("api_key"):
+            self.api_key.insert(0, self.app_cfg["api_key"])
+        self.remember_key = ctk.BooleanVar(value=bool(self.app_cfg.get("api_key")))
+        ctk.CTkCheckBox(s.body, text="Запомнить ключ на этом компьютере", variable=self.remember_key, fg_color=ACCENT).pack(anchor="w", pady=(0, 6))
+        ctk.CTkLabel(s.body, text="Модель", anchor="w").pack(fill="x")
+        self.ai_model_var = ctk.StringVar(value=_invert(AI_MODELS).get(self.app_cfg.get("ai_model", ""), next(iter(AI_MODELS))))
+        ctk.CTkOptionMenu(s.body, values=list(AI_MODELS), variable=self.ai_model_var).pack(fill="x", pady=(2, 0))
+
         s = Section(col, "Звук")
         s.pack(fill="x", pady=(0, 10))
         ctk.CTkLabel(
@@ -661,11 +681,16 @@ class App(ctk.CTk):
         voice = self.voice_slot.path
         model, lang = self.model_var.get(), LANGUAGES[self.lang_var.get()]
         cache = self.analysis_cache
+        key = self.api_key.get().strip()
+        if mode == "ai" and not (key or os.environ.get("ANTHROPIC_API_KEY")):
+            messagebox.showwarning("Montash", "Для ИИ-подбора сцен введите ключ API Anthropic\n(раздел «ИИ-подбор сцен»).")
+            return
+        ai = AiOptions(key or None, AI_MODELS[self.ai_model_var.get()])
 
         def job():
             montage = build_montage(
                 files, text, total, mode, max_shot, voice, model, lang,
-                progress=self._progress, cached=cache,
+                progress=self._progress, cached=cache, ai=ai,
             )
             self.events.put(("montage", montage))
 
@@ -720,6 +745,8 @@ class App(ctk.CTk):
         shot = self.montage.shots[i]
         self.film_preview.time.set(shot.out_start + min(0.5, shot.duration / 2))
         self._schedule_preview(50)
+        if shot.note:
+            self._set_status(f"План {i + 1}, ИИ: {shot.note}")
 
     def _replace_shot(self, i: int):
         if not self.montage:
@@ -864,8 +891,9 @@ class App(ctk.CTk):
                     self.film_preview.time.set(0.3)
                     self._schedule_preview(50)
                     self.progress.set(1)
+                    ai_cost = f" ИИ-подбор: ≈ ${data.ai_cost:.2f}." if data.ai_cost else ""
                     self._set_status(
-                        f"Клип собран: {data.total:.0f} с, {len(data.shots)} планов. "
+                        f"Клип собран: {data.total:.0f} с, {len(data.shots)} планов.{ai_cost} "
                         "Проверьте кадры и нажмите «Сохранить клип»."
                     )
                 elif kind == "rendered":
@@ -904,7 +932,8 @@ class App(ctk.CTk):
             duration=int(self.dur_slider.get()), tab=self.tabs.get(),
             script=self._script_text(), film_mode=MODES[self.mode_var.get()],
             film_duration=int(self.film_dur.get()), shot_len=self.shot_len.get(),
-            music_volume=int(self.music_vol.get()),
+            music_volume=int(self.music_vol.get()), ai_model=AI_MODELS[self.ai_model_var.get()],
+            api_key=self.api_key.get().strip() if self.remember_key.get() else "",
         )
         save_settings(self._collect_style(), self._collect_render(), self.app_cfg)
         self.destroy()

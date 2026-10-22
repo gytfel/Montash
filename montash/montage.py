@@ -8,7 +8,7 @@ from typing import Callable
 
 from .analysis import analyze_video
 from .ffmpeg_tools import probe_duration
-from .film import FilmIndex, Shot, plan_shots, subtitle_chunks
+from .film import FilmIndex, Shot, plan_shots, split_into_shots, subtitle_chunks
 from .models import Chunk, Word
 from .render import Segment
 from .script import Sentence, time_by_voice, time_evenly
@@ -24,6 +24,7 @@ class Montage:
     shots: list[Shot]
     total: float
     voice_words: list[Word] | None = None
+    ai_cost: float = 0.0  # примерная стоимость ИИ-подбора, $
 
     def segments(self) -> list[Segment]:
         return [Segment(self.files[s.file_index], s.src_start, s.duration) for s in self.shots]
@@ -60,8 +61,12 @@ def build_montage(
     language: str | None = None,
     progress: Progress | None = None,
     cached: dict | None = None,
+    ai=None,
 ) -> Montage:
-    """`cached` — словарь путь -> VideoAnalysis, чтобы не анализировать повторно."""
+    """`cached` — словарь путь -> VideoAnalysis, чтобы не анализировать повторно.
+
+    `ai` — ai_scenes.AiOptions, нужен для mode="ai".
+    """
 
     def report(frac: float, msg: str) -> None:
         if progress:
@@ -90,7 +95,19 @@ def build_montage(
     else:
         sentences = time_evenly(text, total)
 
+    candidates, ai_cost = None, 0.0
+    if mode == "ai":
+        from .ai_scenes import AiOptions, match_scenes
+
+        needed = [0] * len(sentences)
+        for shot in split_into_shots(sentences, total, max_shot):
+            needed[shot.sentence] += 1
+        candidates, ai_cost = match_scenes(
+            files, index, [s.text for s in sentences], needed, ai or AiOptions(),
+            lambda f, m: report(0.75 + 0.22 * f, m),
+        )
+
     report(0.97, "Подбор кадров…")
-    shots = plan_shots(index, sentences, total, mode, max_shot)
+    shots = plan_shots(index, sentences, total, mode, max_shot, candidates)
     report(1.0, f"Готово: {len(sentences)} фраз, {len(shots)} планов, {total:.0f} с")
-    return Montage(files, index, sentences, shots, total, words)
+    return Montage(files, index, sentences, shots, total, words, ai_cost)
