@@ -50,6 +50,9 @@
 
 ## Запуск из исходников
 
+Windows: установите Python 3.12 (отметьте «Add python.exe to PATH») и дважды щёлкните `run.bat`.
+Вручную:
+
 ```bash
 pip install -r requirements.txt
 python main.py                 # графический интерфейс

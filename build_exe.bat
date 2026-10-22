@@ -1,4 +1,6 @@
 @echo off
+chcp 65001 >nul
+cd /d "%~dp0"
 REM Сборка Montash.exe (Windows). Нужен Python 3.10+.
 python -m pip install -r requirements.txt pyinstaller || exit /b 1
 pyinstaller --noconfirm --onedir --windowed --name Montash ^
