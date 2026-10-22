@@ -11,7 +11,7 @@ echo Найден:
 %PY% --version
 echo.
 echo Проверка библиотек. В первый раз они скачиваются, это несколько минут...
-%PY% -m pip install --disable-pip-version-check -r requirements.txt
+%PY% -m pip install --disable-pip-version-check --no-warn-script-location -r requirements.txt
 if errorlevel 1 (
     echo.
     echo Не удалось установить библиотеки. Сделайте скриншот этого окна.

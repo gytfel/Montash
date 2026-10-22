@@ -7,7 +7,7 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-%PY% -m pip install --disable-pip-version-check -r requirements.txt pyinstaller
+%PY% -m pip install --disable-pip-version-check --no-warn-script-location -r requirements.txt pyinstaller
 if errorlevel 1 goto :fail
 %PY% -m PyInstaller --noconfirm --onedir --windowed --name Montash ^
   --collect-all customtkinter ^
