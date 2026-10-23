@@ -19,10 +19,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Callable
 
-from .analysis import CACHE_DIR, cache_stem
+from .analysis import cache_stem
 from .ffmpeg_tools import _CREATE_NO_WINDOW, ffmpeg_path
 from .film import Candidate, FilmIndex, select_keyframes
 from .models import fmt_time
+from .paths import cache_dir
 
 AI_MODELS = {
     "Claude Opus 5.5 (точнее)": "claude-opus-5-5",
@@ -330,7 +331,7 @@ def _key(seconds: float) -> str:
 
 
 def _captions_path(path: str):
-    return CACHE_DIR / f"{cache_stem(path)}_captions.json"
+    return cache_dir() / f"{cache_stem(path)}_captions.json"
 
 
 def _load_captions(path: str) -> dict[str, str]:
@@ -342,7 +343,6 @@ def _load_captions(path: str) -> dict[str, str]:
 
 def _save_captions(path: str, captions: dict[str, str]) -> None:
     try:
-        CACHE_DIR.mkdir(exist_ok=True)
         _captions_path(path).write_text(json.dumps(captions, ensure_ascii=False), encoding="utf-8")
     except OSError:
         pass

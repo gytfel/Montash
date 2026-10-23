@@ -3,6 +3,9 @@
 import sys
 
 if __name__ == "__main__":
+    from montash import paths
+
+    paths.setup()
     if len(sys.argv) > 1:
         from montash.cli import main
     else:

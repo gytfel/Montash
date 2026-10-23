@@ -8,6 +8,7 @@ from typing import Callable
 
 from .ffmpeg_tools import extract_audio
 from .models import Word
+from .paths import models_dir
 
 MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 LANGUAGES = {
@@ -56,7 +57,9 @@ def _run(model_name: str, device: str, wav: str, language, duration, report) -> 
     key = f"{model_name}@{device}"
     if key not in _model_cache:
         report(0.05, f"Загрузка модели {model_name} (первый раз скачивается)…")
-        _model_cache[key] = WhisperModel(model_name, device=device, compute_type="int8")
+        _model_cache[key] = WhisperModel(
+            model_name, device=device, compute_type="int8", download_root=str(models_dir() / "hub")
+        )
     model = _model_cache[key]
 
     report(0.1, "Распознавание речи…")

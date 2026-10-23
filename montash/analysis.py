@@ -16,13 +16,13 @@ from typing import Callable
 import numpy as np
 
 from .ffmpeg_tools import _CREATE_NO_WINDOW, ffmpeg_path, probe_duration
+from .paths import cache_dir
 
 STEP = 0.25  # секунд на один отсчёт
 _FPS = round(1 / STEP)
 _W, _H = 64, 36
 _AUDIO_RATE = 4000
 _CACHE_VERSION = 1
-CACHE_DIR = Path.home() / ".montash_cache"
 
 
 @dataclass
@@ -47,7 +47,7 @@ def cache_stem(path: str) -> str:
 
 
 def _cache_path(path: str) -> Path:
-    return CACHE_DIR / (cache_stem(path) + ".npz")
+    return cache_dir() / (cache_stem(path) + ".npz")
 
 
 def analyze_video(
@@ -94,7 +94,6 @@ def analyze_video(
 
     result = VideoAnalysis(path, duration, motion, loudness, brightness, cuts)
     try:
-        CACHE_DIR.mkdir(exist_ok=True)
         np.savez_compressed(
             cache, duration=duration, motion=motion, loudness=loudness,
             brightness=brightness, cuts=cuts,

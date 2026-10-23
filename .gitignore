@@ -5,3 +5,5 @@ dist/
 *.spec
 .venv/
 .pytest_cache/
+data/
+downloads/

@@ -2,6 +2,13 @@
 chcp 65001 >nul
 cd /d "%~dp0"
 REM Сборка Montash.exe (Windows).
+REM Временные файлы и кэш pip — рядом с программой, а не на системном диске.
+if not exist "data\tmp" mkdir "data\tmp" 2>nul
+if exist "data\tmp" (
+    set "TEMP=%~dp0data\tmp"
+    set "TMP=%~dp0data\tmp"
+    set "PIP_CACHE_DIR=%~dp0data\pip-cache"
+)
 call scripts\find_python.bat
 if errorlevel 1 (
     pause

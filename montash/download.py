@@ -9,10 +9,10 @@ from pathlib import Path
 from typing import Callable
 
 from .ffmpeg_tools import app_dir, ffmpeg_path
+from .paths import downloads_dir
 
 MIN_FREE_MB = 300  # меньше — даже короткое видео может не поместиться
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".ts", ".wmv", ".flv", ".mpg", ".mpeg"}
-DOWNLOAD_DIR = Path.home() / "Videos" / "Montash"
 
 Progress = Callable[[float, str], None]
 
@@ -63,8 +63,12 @@ def collect_videos(paths: list[str]) -> list[str]:
     return list(dict.fromkeys(result))
 
 
-def download(url: str, out_dir: str | os.PathLike = DOWNLOAD_DIR, progress: Progress | None = None) -> str:
-    """Скачивает одно видео (до 1080p) и возвращает путь к файлу."""
+def download(url: str, out_dir: str | os.PathLike | None = None, progress: Progress | None = None) -> str:
+    """Скачивает одно видео (до 1080p) и возвращает путь к файлу.
+
+    По умолчанию — в папку downloads рядом с программой.
+    """
+    out_dir = out_dir or downloads_dir()
     try:
         import yt_dlp
     except ImportError as e:

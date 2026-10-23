@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import fields
-from pathlib import Path
 
 from .models import RenderSettings, SubtitleStyle
-
-CONFIG_PATH = Path.home() / ".montash.json"
+from .paths import LEGACY_SETTINGS, settings_path
 
 
 def _load_into(cls, data: dict):
@@ -18,7 +16,8 @@ def _load_into(cls, data: dict):
 
 def load_settings() -> tuple[SubtitleStyle, RenderSettings, dict]:
     try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        path = settings_path() if settings_path().is_file() else LEGACY_SETTINGS
+        data = json.loads(path.read_text(encoding="utf-8"))
         return (
             _load_into(SubtitleStyle, data.get("style", {})),
             _load_into(RenderSettings, data.get("render", {})),
@@ -32,7 +31,7 @@ def save_settings(style: SubtitleStyle, render: RenderSettings, app: dict) -> No
     from .models import to_dict
 
     try:
-        CONFIG_PATH.write_text(
+        settings_path().write_text(
             json.dumps(
                 {"style": to_dict(style), "render": to_dict(render), "app": app},
                 ensure_ascii=False,

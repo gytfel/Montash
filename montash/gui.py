@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import queue
+import shutil
 import sys
 import tempfile
 import threading
@@ -18,13 +19,14 @@ from PIL import Image
 from . import __version__
 from .clips import apply_text_edit, build_clips, rechunk
 from .download import (
-    DOWNLOAD_DIR, VIDEO_EXTS, collect_videos, disk_full_message, download, free_mb, is_disk_full, is_url,
+    VIDEO_EXTS, collect_videos, disk_full_message, download, free_mb, is_disk_full, is_url,
 )
 from .ffmpeg_tools import probe_duration
 from .ai_scenes import AI_MODELS, AiOptions
 from .film import MODES, replace_shot, set_shot_time
 from .models import FILL_MODES, FORMATS, LOOKS, Clip, RenderSettings, SubtitleStyle, fmt_time
 from .montage import Montage, build_montage, natural_sort_key
+from .paths import downloads_dir
 from .project import load_settings, save_settings
 from .render import render_clip, render_frame, render_montage
 from .script import natural_duration, split_sentences
@@ -676,7 +678,7 @@ class App(ctk.CTk, _DnDBase):
             self._set_videos(videos)
 
     def _ask_link(self, target: str):
-        answer = UrlDialog.ask(self, self.app_cfg.get("download_dir") or str(DOWNLOAD_DIR))
+        answer = UrlDialog.ask(self, self.app_cfg.get("download_dir") or str(downloads_dir()))
         if answer:
             url, self.app_cfg["download_dir"] = answer
             self._download_link(url, target)
@@ -685,7 +687,7 @@ class App(ctk.CTk, _DnDBase):
         if self.busy:
             messagebox.showinfo("Montash", "Дождитесь окончания текущей операции")
             return
-        out_dir = self.app_cfg.get("download_dir") or str(DOWNLOAD_DIR)
+        out_dir = self.app_cfg.get("download_dir") or str(downloads_dir())
 
         def job():
             path = download(url, out_dir, self._progress)
@@ -1167,6 +1169,7 @@ class App(ctk.CTk, _DnDBase):
             api_key=self.api_key.get().strip() if self.remember_key.get() else "",
         )
         save_settings(self._collect_style(), self._collect_render(), self.app_cfg)
+        shutil.rmtree(self.preview_dir, ignore_errors=True)
         self.destroy()
 
 
