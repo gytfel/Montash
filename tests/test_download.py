@@ -24,3 +24,18 @@ def test_explain_common_errors():
     assert "DRM" in _explain("ERROR: [x] 1: This video is DRM protected")
     assert "404" in _explain("ERROR: Unable to download webpage: HTTP Error 404: Not Found")
     assert "входа" in _explain("ERROR: [youtube] x: Sign in to confirm your age")
+
+
+def test_disk_full_detection_and_precheck(tmp_path, monkeypatch):
+    import pytest
+
+    import montash.download as d
+
+    assert d.is_disk_full("unable to write data: [Errno 28] No space left on device")
+    assert d.is_disk_full("[WinError 112] There is not enough space on the disk")
+    assert not d.is_disk_full("HTTP Error 404: Not Found")
+    assert d.free_mb(tmp_path / "not" / "created" / "yet") > 0
+
+    monkeypatch.setattr(d, "MIN_FREE_MB", float("inf"))
+    with pytest.raises(d.DownloadError, match="Закончилось место"):
+        d.download("https://example.com/video.mp4", tmp_path / "dl")

@@ -10,6 +10,7 @@ from typing import Callable
 
 from .ffmpeg_tools import app_dir, ffmpeg_path
 
+MIN_FREE_MB = 300  # меньше — даже короткое видео может не поместиться
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".ts", ".wmv", ".flv", ".mpg", ".mpeg"}
 DOWNLOAD_DIR = Path.home() / "Videos" / "Montash"
 
@@ -18,6 +19,29 @@ Progress = Callable[[float, str], None]
 
 class DownloadError(RuntimeError):
     pass
+
+
+def is_disk_full(message: str) -> bool:
+    low = message.lower()
+    return "errno 28" in low or "no space left" in low or "not enough space" in low or "winerror 112" in low
+
+
+def free_mb(path: str | os.PathLike) -> float:
+    """Свободное место (МБ) на диске, где лежит или будет лежать `path`."""
+    p = Path(path).resolve()
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    return shutil.disk_usage(p).free / 2**20
+
+
+def disk_full_message(path: str | os.PathLike | None = None) -> str:
+    drive = Path(path).resolve().drive if path else ""
+    where = f"на диске {drive}" if drive else "на диске"
+    return (
+        f"Закончилось место {where}.\n\n"
+        "Освободите место (корзина, «Загрузки», старые видео) или выберите папку на другом "
+        "диске: для скачанных видео — в окне «По ссылке», для готовых клипов — при сохранении."
+    )
 
 
 def is_url(text: str) -> bool:
@@ -63,6 +87,8 @@ def download(url: str, out_dir: str | os.PathLike = DOWNLOAD_DIR, progress: Prog
         if d.get("status") == "started" and d.get("postprocessor") == "Merger":
             report(0.99, "Склейка видео и звука…")
 
+    if free_mb(out_dir) < MIN_FREE_MB:
+        raise DownloadError(disk_full_message(out_dir))
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     opts = {
         # До 1080p, по возможности H.264 в mp4 — быстрее анализ и рендер.
@@ -91,6 +117,8 @@ def download(url: str, out_dir: str | os.PathLike = DOWNLOAD_DIR, progress: Prog
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
     except yt_dlp.utils.DownloadError as e:
+        if is_disk_full(str(e)):
+            raise DownloadError(disk_full_message(out_dir)) from e
         raise DownloadError(_explain(str(e))) from e
 
     if info and info.get("entries"):

@@ -17,7 +17,9 @@ from PIL import Image
 
 from . import __version__
 from .clips import apply_text_edit, build_clips, rechunk
-from .download import DOWNLOAD_DIR, VIDEO_EXTS, collect_videos, download, is_url
+from .download import (
+    DOWNLOAD_DIR, VIDEO_EXTS, collect_videos, disk_full_message, download, free_mb, is_disk_full, is_url,
+)
 from .ffmpeg_tools import probe_duration
 from .ai_scenes import AI_MODELS, AiOptions
 from .film import MODES, replace_shot, set_shot_time
@@ -181,20 +183,27 @@ class FileSlot(ctk.CTkFrame):
 class UrlDialog(ctk.CTkToplevel):
     """Окно для ссылки на видео; ссылка из буфера обмена подставляется сама."""
 
-    def __init__(self, master):
+    def __init__(self, master, folder: str):
         super().__init__(master)
         self.title("Видео по ссылке")
-        self.geometry("560x200")
+        self.geometry("580x250")
         self.resizable(False, False)
         self.configure(fg_color=BG)
-        self.result: str | None = None
+        self.result: tuple[str, str] | None = None
+        self.folder = folder
         ctk.CTkLabel(
-            self, justify="left", anchor="w", wraplength=520,
+            self, justify="left", anchor="w", wraplength=540,
             text="Вставьте ссылку на видео: YouTube, VK Видео, Rutube, TikTok, Twitch, Vimeo "
-            "или прямую ссылку на файл. Видео сохранится в папку «Видео\\Montash».",
+            "или прямую ссылку на файл.",
         ).pack(fill="x", padx=16, pady=(16, 8))
         self.entry = ctk.CTkEntry(self, placeholder_text="https://…")
         self.entry.pack(fill="x", padx=16)
+        folder_row = ctk.CTkFrame(self, fg_color="transparent")
+        folder_row.pack(fill="x", padx=16, pady=(10, 0))
+        ctk.CTkButton(folder_row, text="Изменить…", width=100, fg_color="#3A3F55", command=self._pick_folder).pack(side="right")
+        self.folder_label = ctk.CTkLabel(folder_row, anchor="w", justify="left", wraplength=420, text_color=MUTED)
+        self.folder_label.pack(side="left", fill="x", expand=True)
+        self._show_folder()
         try:
             clip = self.clipboard_get().strip()
             if is_url(clip):
@@ -217,17 +226,30 @@ class UrlDialog(ctk.CTkToplevel):
             pass
         self.entry.focus_set()
 
+    def _show_folder(self):
+        try:
+            free = f" (свободно {free_mb(self.folder) / 1024:.1f} ГБ)"
+        except OSError:
+            free = ""
+        self.folder_label.configure(text=f"Сохранить в: {self.folder}{free}")
+
+    def _pick_folder(self):
+        folder = filedialog.askdirectory(parent=self, title="Папка для скачанных видео", initialdir=self.folder)
+        if folder:
+            self.folder = folder
+            self._show_folder()
+
     def _ok(self):
         url = self.entry.get().strip()
         if not is_url(url):
             self.entry.configure(border_color="#FF5252")
             return
-        self.result = url
+        self.result = (url, self.folder)
         self.destroy()
 
     @classmethod
-    def ask(cls, master) -> str | None:
-        dialog = cls(master)
+    def ask(cls, master, folder: str) -> tuple[str, str] | None:
+        dialog = cls(master, folder)
         master.wait_window(dialog)
         return dialog.result
 
@@ -654,8 +676,9 @@ class App(ctk.CTk, _DnDBase):
             self._set_videos(videos)
 
     def _ask_link(self, target: str):
-        url = UrlDialog.ask(self)
-        if url:
+        answer = UrlDialog.ask(self, self.app_cfg.get("download_dir") or str(DOWNLOAD_DIR))
+        if answer:
+            url, self.app_cfg["download_dir"] = answer
             self._download_link(url, target)
 
     def _download_link(self, url: str, target: str):
@@ -1054,7 +1077,10 @@ class App(ctk.CTk, _DnDBase):
                 fn()
             except Exception as e:
                 traceback.print_exc()
-                self.events.put(("error", str(e)))
+                message = str(e)
+                if is_disk_full(message):
+                    message = disk_full_message()
+                self.events.put(("error", message))
             finally:
                 self.events.put(("done", None))
 
